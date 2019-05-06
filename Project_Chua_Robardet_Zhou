@@ -1,0 +1,152 @@
+import math
+import numpy as np
+import pandas as pd
+
+
+## Load SXXP_index_binary.csv
+# Load file as a DataFrame and ignore last 4 lines
+binary = pd.read_csv("/Users/florobardet/Downloads/SXXP_Index_binary.csv", header=[0, 1, 2], skiprows=range(4513, 4517))
+
+# Remove repetitive header information
+binary.columns = binary.columns.droplevel(1)
+
+# Define column levels for column MultiIndex
+level_0_values = [value for value in binary.columns.get_level_values(0) if "Unnamed" not in value]
+level_1_values = binary.columns.get_level_values(1).unique().delete(0).tolist()
+
+# Leave DataFrame with only one column level before assigning MultiIndex
+binary.columns = binary.columns.droplevel(0)
+
+# Set dates as index column
+binary["Dates"] = pd.to_datetime(binary["Dates"])
+binary.set_index("Dates", inplace=True)
+
+# Assign column MultiIndex to DataFrame's columns attribute
+binary.columns = pd.MultiIndex.from_product([level_0_values, level_1_values])
+
+# Separate stock information from that of the SXXP index
+binary_stocks = binary[binary.columns.get_level_values(0).unique().delete(-1)]
+binary_index = binary[binary.columns.get_level_values(0).unique()[-1]]
+
+binary_stocks.head()
+binary_index.head()
+
+
+##Load SXXP_index_components.csv
+components = pd.read_csv("/Users/florobardet/Downloads/SXXP_index_components.csv", index_col=[0])
+components.index = pd.to_datetime(components.index)
+
+
+## Compute stock prices by date
+def compute_closest_date(index_df, date):
+    return index_df[index_df.index < date].index.max()
+
+def compute_stock_prices(binary, components, date):
+    binary_closest_date = compute_closest_date(binary, date)
+    components_closest_date = compute_closest_date(components, date)
+    
+    is_in_SXXP_Index = components.loc[components_closest_date] == 1
+    stocks_in_SXXP_Index = is_in_SXXP_Index[np.where(is_in_SXXP_Index)[0]].index.tolist()
+    
+    return binary[stocks_in_SXXP_Index]
+    
+print(compute_stock_prices(binary,components,"2018-03-01"))
+
+
+## Compute stock returns, volatilities, and capitalisation
+def compute_stock_returns(binary):
+    PX_CLOSE_1D = binary.loc[:, pd.IndexSlice[:, "PX_CLOSE_1D"]]
+    PX_CLOSE_1D.columns = PX_CLOSE_1D.columns.droplevel(1)
+    
+    return PX_CLOSE_1D.pct_change(-1)
+
+def compute_stock_volatilities(stock_returns):
+    return stock_returns.std(axis=0) * math.sqrt(252)
+
+def compute_stock_cap(binary):
+    stock_cap = binary_index["PX_CLOSE_1D"]*binary_index["PX_VOLUME"]
+    return stock_cap
+    
+stock_returns = compute_stock_returns(binary_stocks)
+stock_volatilities = compute_stock_volatilities(stock_returns)
+stock_cap = compute_stock_cap(binary_stocks)
+
+stock_returns.head()
+stock_volatilities.head()
+stock_cap.head()
+
+
+## Compute portfolio strategies
+def compute_portfolio_strategy(stock_returns, weights):
+    stock_returns_weighted = stock_returns * weights
+
+    portfolio_return = stock_returns_weighted.sum(axis=1)
+    cumulative_portfolio_return = (1 + portfolio_return).cumprod() - 1
+
+    stock_returns_weighted["Portfolio Return"] = portfolio_return
+    stock_returns_weighted["Cumulative Portfolio Return"] = cumulative_portfolio_return
+    stock_returns_weighted["Cumulative Portfolio Strategy"] = cumulative_portfolio_return * 100
+
+    return stock_returns_weighted[stock_returns_weighted.columns[-3:]]
+    
+# Define parameters for computing weights
+nb_stocks = stock_returns.columns.size
+stock_inverse_vols = 1 / stock_volatilities
+
+# Compute weights for different weighting strategies
+weights_equi = [1 / nb_stocks] * nb_stocks
+weights_volatility = stock_volatilities / stock_volatilities.sum()
+weights_inverse_vol = stock_inverse_vols / stock_inverse_vols.sum()
+weights_cap = stock_cap / stock_cap.sum()
+
+# Get each portfolio strategy
+portfolio_equi = compute_portfolio_strategy(stock_returns, weights_equi)
+portfolio_volatility = compute_portfolio_strategy(stock_returns, weights_volatility)
+portfolio_inverse_vol = compute_portfolio_strategy(stock_returns, weights_inverse_vol)
+portfolio_cap = compute_portfolio_strategy(stock_returns, weights_cap)
+
+portfolio_equi.head()
+portfolio_volatility.head()
+portfolio_inverse_vol.head()
+portfolio_cap.head()
+
+
+## Compute statistics
+def compute_statistics(portfolio_strategy, risk_free):
+    portfolio_returns = portfolio_strategy[portfolio_strategy.columns[:-1]]
+    
+    portfolio_vol = portfolio_returns.std(axis=0)
+    portfolio_sharpe_ratio = (portfolio_returns - risk_free) / portfolio_volatility
+    
+    return {"Volatility of Strategy": portfolio_vol,
+            "Sharpe Ratio of Strategy": portfolio_sharpe_ratio}
+
+# Define risk free value
+risk_free = 0.03
+
+# Get statistics for each portfolio strategy
+portfolio_equi_statistics = compute_statistics(portfolio_equi, risk_free)
+portfolio_volatility_statistics = compute_statistics(portfolio_volatility, risk_free)
+portfolio_inverse_vol_statistics = compute_statistics(portfolio_inverse_vol, risk_free)
+
+### Equiweighted portfolio strategy
+portfolio_equi_statistics["Volatility of Strategy"]
+portfolio_equi_statistics["Sharpe Ratio of Strategy"].head()
+
+### Volatility-weighted portfolio strategy
+portfolio_volatility_statistics["Volatility of Strategy"]
+portfolio_volatility_statistics["Sharpe Ratio of Strategy"].head()
+
+### Inverse volatility-weighted portfolio strategy
+portfolio_inverse_vol_statistics["Volatility of Strategy"]
+portfolio_inverse_vol_statistics["Sharpe Ratio of Strategy"].head()
+
+# Get statistics for each portfolio strategy (Alternative method)
+d1 = portfolio_equi[portfolio_equi.columns[-1:]]
+d2 = portfolio_volatility[portfolio_volatility.columns[-1:]]
+d3 = portfolio_inverse_vol[portfolio_inverse_vol.columns[-1:]]
+d4 = portfolio_cap[portfolio_cap.columns[-1:]]
+dlist = [d1,d2,d3,d4]
+for df in dlist: 
+    print('\nSummary - Daily returns (Strategy):\nMean: ', df.mean(),'\nMin: ',df.min(),'\nMax: ',df.max(), \
+          '\nAnnualized voll : ', compute_stock_volatilities(df),'\nMax Sharpe Ratio: ', (df/df.std()).max())
